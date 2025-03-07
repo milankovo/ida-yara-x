@@ -16,7 +16,7 @@ The plugin can be launched from the menu using `Search->Yara-x rules` or using t
 
 All rule matches are displayed in a selection box that allows you to double click the matches and jump to their location in the binary. 
 
-You can also view the list of last 20 scanned rule files by using the `View->Rrecent yara-x files` menu option. This will display a list of the last 20 rules scanned and allow you to select one to rescan the binary with. You can also delete the rule from the list.
+You can also view the list of last 20 scanned rule files by using the `View->Recent yara-x files` menu option. This will display a list of the last 20 rules scanned and allow you to select one to rescan the binary with. You can also delete the rule from the list.
 
 ### Rules Not Matching Binary
 FindYara scans the loaded PE sections in IDA, this means that yara rules that include matches on the PE header **will not match in IDA**. IDA does not load the PE header as a scannable section. Also, if you have not selected `Load resources` when loading your binary in IDA then the resources section will be unavailable for scanning. 
