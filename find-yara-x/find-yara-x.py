@@ -174,9 +174,6 @@ class YaraSearchResultChooser(idaapi.Choose):
         )
         self.items = items
 
-    def OnClose(self):
-        return
-
     def OnGetLine(self, n):
         return [*self.items[n]]
 
@@ -205,9 +202,6 @@ class RecentYaraFilesChooser(idaapi.Choose):
             embedded=embedded,
         )
         self.items = PreviousFilenames.read()
-
-    def OnClose(self):
-        return
 
     def OnGetLine(self, n):
         return [self.items[n]]
@@ -238,7 +232,6 @@ def search(yara_file: str):
         rules = yara_x.compile(rules_text)
     except yara_x.CompileError as e:
         idaapi.warning(f"Cannot compile Yara rules\n\n{e}")
-        # logger.error(f"Cannot compile Yara rules from {yara_file}\n\n{e}", exc_info=None)
         return
     except Exception as e:
         logger.error(f"Cannot open Yara rules from {yara_file}", exc_info=e)
@@ -250,7 +243,7 @@ def search(yara_file: str):
 
     values = yarasearch(memory, rules)
     if not values:
-        logger.warning("No matches found")
+        logger.info("No matches found")
         return
     logger.debug("Displaying results...")
     c = YaraSearchResultChooser("FindYara scan results", values)
@@ -345,14 +338,14 @@ class FindYaraX_Plugin_t(idaapi.plugin_t):
 
         search_bytes_action = idaapi.action_desc_t(
             self.search_action_name,
-            "yara-x rules",
+            "Yara-x rules",
             search_ah_t(),
             PLUGIN_HOTKEY,
         )
         idaapi.register_action(search_bytes_action)
 
         recent_action = idaapi.action_desc_t(
-            self.recent_action_name, "recent yara-x files", open_recent_files_ah_t()
+            self.recent_action_name, "Recent yara-x files", open_recent_files_ah_t()
         )
         idaapi.register_action(recent_action)
         idaapi.attach_action_to_menu(
