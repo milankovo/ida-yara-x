@@ -13,6 +13,6 @@ jobs:
     - uses: actions/checkout@v2
     - uses: ncipollo/release-action@v1
       with:
-        artifacts: "findyara.py"
+        artifacts: "find-yara-x/*"
         omitBody: true
         token: ${{ secrets.GITHUB_TOKEN }}
