@@ -29,20 +29,23 @@
 ##
 ########################################################################################
 
-import idaapi
-import yara_x
-import string
 import logging
+import os
+import string
+import typing
 from dataclasses import dataclass
 from enum import Enum
-import typing
+
+import idaapi
+import yara_x
 
 logger = logging.getLogger("FindYaraX")
 logger.setLevel(logging.WARNING)
-formatter = logging.Formatter("[%(name)s] %(levelname)s: %(message)s")
-ch = logging.StreamHandler()
-ch.setFormatter(formatter)
-logger.addHandler(ch)
+if not logger.handlers:
+    logger.addHandler(logging.StreamHandler())
+logger.handlers[0].setFormatter(
+    logging.Formatter("[%(name)s] %(levelname)s: %(message)s")
+)
 
 
 __author__ = "@herrcore, @_p0ly_, @milankovo"
@@ -50,6 +53,30 @@ __author__ = "@herrcore, @_p0ly_, @milankovo"
 PLUGIN_NAME = "FindYaraX"
 PLUGIN_HOTKEY = "Ctrl-Alt-Y"
 VERSION = "4.0.0"
+
+
+class PreviousFilenames:
+    REG_KEY = "FindYaraX"
+    MAX_RECS = 20
+
+    @staticmethod
+    def read():
+        return idaapi.reg_read_strlist(PreviousFilenames.REG_KEY)
+
+    @staticmethod
+    def add_filename(filename):
+        idaapi.reg_update_filestrlist(
+            PreviousFilenames.REG_KEY, filename, maxrecs=PreviousFilenames.MAX_RECS
+        )
+
+    @staticmethod
+    def remove_filename(filename):
+        idaapi.reg_update_filestrlist(
+            PreviousFilenames.REG_KEY,
+            None,
+            maxrecs=PreviousFilenames.MAX_RECS,
+            rem=filename,
+        )
 
 
 class MatchType(Enum):
@@ -160,6 +187,142 @@ class YaraSearchResultChooser(idaapi.Choose):
         return len(self.items)
 
 
+class RecentYaraFilesChooser(idaapi.Choose):
+    def __init__(
+        self,
+        title,
+        flags=0,
+        width=None,
+        height=None,
+        embedded=False,
+    ):
+        super().__init__(
+            title=title,
+            cols=[["Filename", idaapi.Choose.CHCOL_PATH | 40]],
+            flags=flags,
+            width=width,
+            height=height,
+            embedded=embedded,
+        )
+        self.items = PreviousFilenames.read()
+
+    def OnClose(self):
+        return
+
+    def OnGetLine(self, n):
+        return [self.items[n]]
+
+    def OnSelectLine(self, sel):
+        search(self.items[sel])
+
+    def OnGetSize(self):
+        return len(self.items)
+
+    def OnRefresh(self, sel):
+        self.items = PreviousFilenames.read()
+        return [idaapi.Choose.ALL_CHANGED] + self.adjust_last_item(sel)
+
+    def OnDeleteLine(self, sel):
+        PreviousFilenames.remove_filename(self.items[sel])
+        self.items = PreviousFilenames.read()
+        return [idaapi.Choose.ALL_CHANGED] + self.adjust_last_item(sel)
+
+
+def search(yara_file: str):
+    if os.path.exists(yara_file) is False:
+        logger.error(f"The file {yara_file} does not exist")
+        return
+
+    try:
+        rules_text = open(yara_file, "r", encoding="utf-8").read()
+        rules = yara_x.compile(rules_text)
+    except yara_x.CompileError as e:
+        idaapi.warning(f"Cannot compile Yara rules\n\n{e}")
+        # logger.error(f"Cannot compile Yara rules from {yara_file}\n\n{e}", exc_info=None)
+        return
+    except Exception as e:
+        logger.error(f"Cannot open Yara rules from {yara_file}", exc_info=e)
+        return
+
+    logger.debug("Gathering segments...")
+    memory = mapped_data()
+    logger.debug("Searching for Yara matches...")
+
+    values = yarasearch(memory, rules)
+    if not values:
+        logger.warning("No matches found")
+        return
+    logger.debug("Displaying results...")
+    c = YaraSearchResultChooser("FindYara scan results", values)
+    c.Show()
+
+
+def process_yara_match(m: yara_x.Match, memory: mapped_data):
+    matched_bytes = bytearray(memory[m.offset : m.offset + m.length])
+
+    if m.xor_key is not None and m.xor_key != 0:
+        matched_bytes = bytearray([c ^ m.xor_key for c in matched_bytes])
+
+    def test(allowed_chars):
+        return all(chr(c) in allowed_chars for c in matched_bytes)
+
+    if test(string.printable):
+        return matched_bytes.decode("utf-8"), MatchType.ASCII_STRING
+
+    if test(string.printable + "\x00") and b"\x00\x00" not in matched_bytes:
+        return matched_bytes.decode("utf-16"), MatchType.WIDE_STRING
+
+    return matched_bytes.hex(" "), MatchType.BINARY
+
+
+def yarasearch(memory: mapped_data, rules: yara_x.Rules):
+    values = list()
+    matches = rules.scan(data=memory.data)
+    for rule_match in matches.matching_rules:
+        for pattern in rule_match.patterns:
+            values.extend(
+                [
+                    result_t(
+                        memory.offset_to_virtual_address(match.offset),
+                        rule_match.identifier,
+                        pattern.identifier,
+                        *process_yara_match(match, memory),
+                    )
+                    for match in pattern.matches
+                ]
+            )
+    return values
+
+
+class search_ah_t(idaapi.action_handler_t):
+    def activate(self, ctx: idaapi.action_ctx_base_t):
+        yara_file = idaapi.ask_file(
+            False, "*.yara;*.yar;*.rules", "Choose a yara file..."
+        )
+        if yara_file is None:
+            logger.error("You must choose a yara file to scan with")
+            return
+        if not os.path.isfile(yara_file):
+            logger.error(f"{yara_file} is not a file")
+            return
+
+        PreviousFilenames.add_filename(yara_file)
+        search(yara_file)
+
+    def update(self, ctx: idaapi.action_ctx_base_t):
+        return idaapi.AST_ENABLE_ALWAYS
+
+
+class open_recent_files_ah_t(idaapi.action_handler_t):
+    def activate(self, ctx: idaapi.action_ctx_base_t):
+        c = RecentYaraFilesChooser("Recent Yara files")
+        c.Show()
+        return
+
+    def update(self, ctx: idaapi.action_ctx_base_t):
+        return idaapi.AST_ENABLE_ALWAYS
+
+
 # --------------------------------------------------------------------------
 # Plugin
 # --------------------------------------------------------------------------
@@ -167,8 +330,9 @@ class FindYaraX_Plugin_t(idaapi.plugin_t):
     comment = "FindYaraX plugin for IDA Pro (using yara_x framework)"
     help = ""
     wanted_name = PLUGIN_NAME
-    wanted_hotkey = PLUGIN_HOTKEY
-    flags = 0
+    flags = idaapi.PLUGIN_HIDE
+    search_action_name = "FindYaraX:Search"
+    recent_action_name = "FindYaraX:Recent"
 
     def init(self):
         addon = idaapi.addon_info_t()
@@ -178,76 +342,34 @@ class FindYaraX_Plugin_t(idaapi.plugin_t):
         addon.url = "https://github.com/milankovo/ida-yara-x"
         addon.version = VERSION
         idaapi.register_addon(addon)
+
+        search_bytes_action = idaapi.action_desc_t(
+            self.search_action_name,
+            "yara-x rules",
+            search_ah_t(),
+            PLUGIN_HOTKEY,
+        )
+        idaapi.register_action(search_bytes_action)
+
+        recent_action = idaapi.action_desc_t(
+            self.recent_action_name, "recent yara-x files", open_recent_files_ah_t()
+        )
+        idaapi.register_action(recent_action)
+        idaapi.attach_action_to_menu(
+            "Search/next sequence of bytes", self.search_action_name, idaapi.SETMENU_APP
+        )
+        idaapi.attach_action_to_menu(
+            "View/Recent scripts", self.recent_action_name, idaapi.SETMENU_APP
+        )
+
         return idaapi.PLUGIN_KEEP
 
     def term(self):
+        idaapi.unregister_action(self.search_action_name)
+        idaapi.unregister_action(self.recent_action_name)
         pass
 
-    def search(self, yara_file):
-        try:
-            rules_text = open(yara_file, "r", encoding="utf-8").read()
-            rules = yara_x.compile(rules_text)
-        except yara_x.CompileError as e:
-            logger.error(f"Cannot compile Yara rules from {yara_file}\n\n{e}")
-            return
-        except Exception as e:
-            logger.error(f"Cannot open Yara rules from {yara_file}", exc_info=e)
-            return
-
-        logger.debug("[FindYaraX] Gathering segments...")
-        memory = mapped_data()
-        logger.debug("[FindYaraX] Searching for Yara matches...")
-
-        values = self.yarasearch(memory, rules)
-        if not values:
-            logger.error("[FindYaraX] No matches found")
-            return
-        logger.debug("[FindYaraX] Displaying results...")
-        c = YaraSearchResultChooser("FindYara scan results", values)
-        c.Show()
-
-    def process_yara_match(self, m: yara_x.Match, memory: mapped_data):
-        matched_bytes = bytearray(memory[m.offset : m.offset + m.length])
-
-        if m.xor_key is not None and m.xor_key != 0:
-            matched_bytes = bytearray([c ^ m.xor_key for c in matched_bytes])
-
-        def test(allowed_chars):
-            return all(chr(c) in allowed_chars for c in matched_bytes)
-
-        if test(string.printable):
-            return matched_bytes.decode("utf-8"), MatchType.ASCII_STRING
-
-        if test(string.printable + "\x00") and b"\x00\x00" not in matched_bytes:
-            return matched_bytes.decode("utf-16"), MatchType.WIDE_STRING
-
-        return matched_bytes.hex(" "), MatchType.BINARY
-
-    def yarasearch(self, memory: mapped_data, rules: yara_x.Rules):
-        values = list()
-        matches = rules.scan(data=memory.data)
-        for rule_match in matches.matching_rules:
-            for pattern in rule_match.patterns:
-                values.extend(
-                    [
-                        result_t(
-                            memory.offset_to_virtual_address(match.offset),
-                            rule_match.identifier,
-                            pattern.identifier,
-                            *self.process_yara_match(match, memory),
-                        )
-                        for match in pattern.matches
-                    ]
-                )
-        return values
-
-    def run(self, arg):
-        yara_file = idaapi.ask_file(0, "*.yara;*.yar;*.rules", "Choose a yara file...")
-        if yara_file is None:
-            logger.error("You must choose a yara file to scan with")
-            return
-
-        self.search(yara_file)
+    def run(self, arg): ...
 
 
 def PLUGIN_ENTRY():
