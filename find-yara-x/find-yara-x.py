@@ -40,7 +40,7 @@ import idaapi
 import yara_x
 
 logger = logging.getLogger("FindYaraX")
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.DEBUG)
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
 logger.handlers[0].setFormatter(
@@ -133,6 +133,7 @@ class result_t:
     match_name: str
     match: str
     match_type: MatchType
+    match_length: int
 
     COLUMNS: typing.ClassVar[list] = [
         ["Address", idaapi.Choose.CHCOL_EA | 10],
@@ -140,6 +141,7 @@ class result_t:
         ["Match Name", idaapi.Choose.CHCOL_PLAIN | 20],
         ["Match", idaapi.Choose.CHCOL_PLAIN | 40],
         ["Type", idaapi.Choose.CHCOL_PLAIN | 10],
+        ["Length", idaapi.Choose.CHCOL_PLAIN | 10],
     ]
 
     def __iter__(self):
@@ -150,6 +152,7 @@ class result_t:
                 self.match_name,
                 self.match,
                 self.match_type.value,
+                str(self.match_length),
             ]
         )
 
@@ -223,6 +226,7 @@ class RecentYaraFilesChooser(idaapi.Choose):
 
 
 def search(yara_file: str):
+    logger.info(f"Searching for Yara rules in {yara_file}")
     if os.path.exists(yara_file) is False:
         logger.error(f"The file {yara_file} does not exist")
         return
@@ -280,6 +284,7 @@ def yarasearch(memory: mapped_data, rules: yara_x.Rules):
                         rule_match.identifier,
                         pattern.identifier,
                         *process_yara_match(match, memory),
+                        match.length,
                     )
                     for match in pattern.matches
                 ]
