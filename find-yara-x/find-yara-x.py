@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import idaapi
+import ida_kernwin
 import yara_x
 
 logger = logging.getLogger("FindYaraX")
@@ -161,7 +162,7 @@ class YaraSearchResultChooser(idaapi.Choose):
     def __init__(
         self,
         title,
-        items,
+        items: list[result_t],
         flags=0,
         width=None,
         height=None,
@@ -176,6 +177,11 @@ class YaraSearchResultChooser(idaapi.Choose):
             embedded=embedded,
         )
         self.items = items
+        ranges = idaapi.rangeset_t()
+        for item in items:
+            ranges.add(item.address, item.address + item.match_length)
+        self.hooks = YaraSearchUIHooks(self, ranges)
+        self.hooks.hook()
 
     def OnGetLine(self, n):
         return [*self.items[n]]
@@ -185,6 +191,69 @@ class YaraSearchResultChooser(idaapi.Choose):
 
     def OnGetSize(self):
         return len(self.items)
+
+    def OnClose(self):
+        self.hooks.unhook()
+
+    def OnSelectionChange(self, sel):
+        if sel < len(self.items):
+            selected_item: result_t = self.items[sel]
+            self.hooks.update_highlight(
+                selected_item.address, selected_item.match_length
+            )
+
+
+class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
+    def __init__(self, chooser, ranges: idaapi.rangeset_t):
+        super().__init__()
+        self.chooser = chooser
+        self.ranges = ranges
+
+    def get_lines_rendering_info(
+        self, out, widget, rin: ida_kernwin.lines_rendering_input_t
+    ):
+        """
+        Highlight the selected item in other views.
+                           ///< cb: get lines rendering information
+                          ///< \param out (lines_rendering_output_t *)
+                          ///< \param widget (const TWidget *)
+                          ///< \param info (const lines_rendering_input_t *)
+                          ///< \return void
+        """
+
+
+        for section_lines in rin.sections_lines:
+            line: idaapi.twinline_t
+            for line in section_lines:
+                nm = line.at.name()
+                ea = line.at.toea()
+
+                range = idaapi.rangeset_t()
+                
+                if nm == "hexplace_t":
+                    range.add(ea, ea + 16)
+                else:
+                    range.add(ea, ea + idaapi.get_item_size(ea))
+
+                range.intersect(self.ranges)
+
+                ra: idaapi.range_t
+                for ra in range.as_rangevec():
+                    e = ida_kernwin.line_rendering_output_entry_t(line)
+                    e.bg_color = ida_kernwin.CK_EXTRA1
+                    
+                    if nm == "hexplace_t":
+                        rel_idx = ra.start_ea - ea
+                        e.cpx = 18 + 3*(rel_idx) + (rel_idx > 7) 
+                        e.nchars = ra.size()*3 - 1
+                        e.flags = idaapi.LROEF_CPS_RANGE
+                        out.entries.push_back(e)
+                    else:
+                        out.entries.push_back(e)
+                    
+
+    def update_highlight(self, ea, size):
+        ida_kernwin.refresh_idaview_anyway()
 
 
 class RecentYaraFilesChooser(idaapi.Choose):
@@ -273,7 +342,7 @@ def process_yara_match(m: yara_x.Match, memory: mapped_data):
 
 
 def yarasearch(memory: mapped_data, rules: yara_x.Rules):
-    values = list()
+    values: list[result_t] = list()
     matches = rules.scan(data=memory.data)
     for rule_match in matches.matching_rules:
         for pattern in rule_match.patterns:
