@@ -180,8 +180,15 @@ class YaraSearchResultChooser(idaapi.Choose):
         ranges = idaapi.rangeset_t()
         for item in items:
             ranges.add(item.address, item.address + item.match_length)
+            break
         self.hooks = YaraSearchUIHooks(self, ranges)
         self.hooks.hook()
+
+        all_ranges = idaapi.rangeset_t()
+        for item in items:
+            all_ranges.add(item.address, item.address + item.match_length)
+        self.view_hooks = YaraSearchViewHooks(self, all_ranges, items)
+        self.view_hooks.hook()
 
     def OnGetLine(self, n):
         return [*self.items[n]]
@@ -194,6 +201,7 @@ class YaraSearchResultChooser(idaapi.Choose):
 
     def OnClose(self):
         self.hooks.unhook()
+        self.view_hooks.unhook()
 
     def OnSelectionChange(self, sel):
         if sel < len(self.items):
@@ -201,6 +209,98 @@ class YaraSearchResultChooser(idaapi.Choose):
             self.hooks.update_highlight(
                 selected_item.address, selected_item.match_length
             )
+            idaapi.jumpto(
+                selected_item.address, -1, idaapi.UIJMP_DONTPUSH | idaapi.UIJMP_ANYVIEW
+            )
+
+        # idaapi.find_widget(idaapi.get_current_viewer())
+        # v = idaapi.get_current_viewer()
+        # if not v:
+        #    return
+        # e = idaapi.lochist_entry_t()
+        # place = idaapi.place_t()
+        # place.
+        # idaapi.jumpto()
+        # e.acquire_place()
+        # idaapi.custom_viewer_jump(v, )
+
+
+class YaraSearchViewHooks(ida_kernwin.View_Hooks):
+    def __init__(self, chooser: YaraSearchResultChooser, ranges: idaapi.rangeset_t, items: list[result_t]):
+        super().__init__()
+        self.chooser = chooser
+        self.ranges = ranges
+        self.items = items
+
+    def view_loc_changed(
+        self,
+        view: "idaapi.TWidget",
+        now: "idaapi.lochist_entry_t",
+        was: "idaapi.lochist_entry_t",
+    ) -> None:
+        """The location for the view has changed (can be either the place_t, the renderer_info_t, or both.)
+
+        :param view: (TWidget *)
+        :param now: (const lochist_entry_t *)
+        :param was: (const lochist_entry_t *)"""
+
+        place: idaapi.place_t = now.place()
+        if not place:
+            return
+        ea  = place.toea()
+        if ea == idaapi.BADADDR:
+            return
+        
+        # logger.debug(f"View location changed: {place} {ea:08x}")
+        range = place_to_range(place)
+        if not range:
+            return
+        range.intersect(self.ranges)
+        if not range:
+            return
+        ea = range.next_addr(0)
+        if ea == idaapi.BADADDR:
+            return
+        for idx, item in enumerate(self.items):
+            if item.address == ea:
+                #item.highlight()
+                #logger.debug(f"Selecting item at {ea:08x} {idx}")
+
+                widg = self.chooser.GetWidget()
+                from PySide6 import QtWidgets
+                
+                qtw: QtWidgets.QWidget = idaapi.PluginForm.TWidgetToQtPythonWidget(widg) # type: ignore
+                # locate QTableView
+                table_view: QtWidgets.QTableView = qtw.findChild(QtWidgets.QTableView) # type: ignore
+                if table_view:
+                    table_view.selectRow(idx)
+                break
+
+def place_to_range(place: idaapi.place_t) -> idaapi.rangeset_t:
+    nm = place.name()
+    ea = place.toea()
+    if ea == idaapi.BADADDR:
+        return idaapi.rangeset_t()
+    #logger.debug(f"Rendering line at {ea:08x} of type {nm}")
+
+    range = idaapi.rangeset_t()
+
+    match nm:
+        case "hexplace_t":
+            range.add(ea, ea + 16)
+        case "idaplace_t":  # handled by _
+            range.add(ea, ea + idaapi.get_item_size(ea))
+        case "hexrays_place_t":
+            # does not work as expected
+            ...
+        case "mbui_place_t":
+            # TODO
+            ...
+        case _:
+            logger.debug(f"Unknown place type {nm} ")
+            range.add(ea, ea + idaapi.get_item_size(ea))
+
+    return range
 
 
 class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
@@ -221,19 +321,10 @@ class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
                           ///< \return void
         """
 
-
         for section_lines in rin.sections_lines:
             line: idaapi.twinline_t
             for line in section_lines:
-                nm = line.at.name()
-                ea = line.at.toea()
-
-                range = idaapi.rangeset_t()
-                
-                if nm == "hexplace_t":
-                    range.add(ea, ea + 16)
-                else:
-                    range.add(ea, ea + idaapi.get_item_size(ea))
+                range = place_to_range(line.at)
 
                 range.intersect(self.ranges)
 
@@ -241,18 +332,23 @@ class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
                 for ra in range.as_rangevec():
                     e = ida_kernwin.line_rendering_output_entry_t(line)
                     e.bg_color = ida_kernwin.CK_EXTRA1
-                    
-                    if nm == "hexplace_t":
-                        rel_idx = ra.start_ea - ea
-                        e.cpx = 18 + 3*(rel_idx) + (rel_idx > 7) 
-                        e.nchars = ra.size()*3 - 1
+
+                    # logger.debug(
+                    #     f"Highlighting from {ra.start_ea:08x} to {ra.end_ea:08x}"
+                    # )
+
+                    if line.at.name() == "hexplace_t":
+                        rel_idx = ra.start_ea - line.at.toea()
+                        e.cpx = 18 + 3 * (rel_idx) + (rel_idx > 7)
+                        e.nchars = ra.size() * 3 - 1
                         e.flags = idaapi.LROEF_CPS_RANGE
                         out.entries.push_back(e)
                     else:
                         out.entries.push_back(e)
-                    
 
     def update_highlight(self, ea, size):
+        self.ranges.clear()
+        self.ranges.add(ea, ea + size)
         ida_kernwin.refresh_idaview_anyway()
 
 
