@@ -53,7 +53,7 @@ __author__ = "@herrcore, @_p0ly_, @milankovo"
 
 PLUGIN_NAME = "FindYaraX"
 PLUGIN_HOTKEY = "Ctrl-Alt-Y"
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 
 
 class PreviousFilenames:

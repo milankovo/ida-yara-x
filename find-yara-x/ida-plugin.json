@@ -1,7 +1,0 @@
-{
-    "IDAMetadataDescriptorVersion": 1,
-    "plugin": {
-        "name": "findyarax",
-        "entryPoint": "find-yara-x.py"
-    }
-}

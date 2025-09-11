@@ -1,0 +1,12 @@
+{
+    "IDAMetadataDescriptorVersion": 1,
+    "plugin": {
+        "name": "findyarax",
+        "entryPoint": "find-yara-x.py",
+        "categories": ["malware-analysis", "collaboration-and-productivity"],
+        "description": "A plugin for finding YARA-X rules in IDA Pro",
+        "idaVersions": ">=9.0",
+        "logoPath": "logo.png",
+        "version": "4.1.0"
+    }
+}
