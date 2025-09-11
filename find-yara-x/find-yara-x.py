@@ -37,8 +37,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 import idaapi
-import ida_kernwin
 import yara_x
+from PySide6 import QtWidgets
 
 logger = logging.getLogger("FindYaraX")
 logger.setLevel(logging.DEBUG)
@@ -163,7 +163,7 @@ class YaraSearchResultChooser(idaapi.Choose):
         self,
         title,
         items: list[result_t],
-        flags=0,
+        flags=idaapi.CH_MULTI,
         width=None,
         height=None,
         embedded=False,
@@ -203,30 +203,26 @@ class YaraSearchResultChooser(idaapi.Choose):
         self.hooks.unhook()
         self.view_hooks.unhook()
 
-    def OnSelectionChange(self, sel):
-        if sel < len(self.items):
-            selected_item: result_t = self.items[sel]
-            self.hooks.update_highlight(
-                selected_item.address, selected_item.match_length
-            )
+    def OnSelectionChange(self, sel: list[int]):
+        self.hooks.clear_highlight()
+        for s in sel:
+            selected_item: result_t = self.items[s]
+            self.hooks.add_highlight(selected_item.address, selected_item.match_length)
+
+        idaapi.refresh_idaview_anyway()
+        if len(sel) == 1:
             idaapi.jumpto(
                 selected_item.address, -1, idaapi.UIJMP_DONTPUSH | idaapi.UIJMP_ANYVIEW
             )
 
-        # idaapi.find_widget(idaapi.get_current_viewer())
-        # v = idaapi.get_current_viewer()
-        # if not v:
-        #    return
-        # e = idaapi.lochist_entry_t()
-        # place = idaapi.place_t()
-        # place.
-        # idaapi.jumpto()
-        # e.acquire_place()
-        # idaapi.custom_viewer_jump(v, )
 
-
-class YaraSearchViewHooks(ida_kernwin.View_Hooks):
-    def __init__(self, chooser: YaraSearchResultChooser, ranges: idaapi.rangeset_t, items: list[result_t]):
+class YaraSearchViewHooks(idaapi.View_Hooks):
+    def __init__(
+        self,
+        chooser: YaraSearchResultChooser,
+        ranges: idaapi.rangeset_t,
+        items: list[result_t],
+    ):
         super().__init__()
         self.chooser = chooser
         self.ranges = ranges
@@ -247,10 +243,10 @@ class YaraSearchViewHooks(ida_kernwin.View_Hooks):
         place: idaapi.place_t = now.place()
         if not place:
             return
-        ea  = place.toea()
+        ea = place.toea()
         if ea == idaapi.BADADDR:
             return
-        
+
         # logger.debug(f"View location changed: {place} {ea:08x}")
         range = place_to_range(place)
         if not range:
@@ -263,25 +259,26 @@ class YaraSearchViewHooks(ida_kernwin.View_Hooks):
             return
         for idx, item in enumerate(self.items):
             if item.address == ea:
-                #item.highlight()
-                #logger.debug(f"Selecting item at {ea:08x} {idx}")
+                twidget = self.chooser.GetWidget
+                widget: QtWidgets.QWidget = idaapi.PluginForm.TWidgetToQtPythonWidget(
+                    twidget
+                )  # type: ignore
+                table_view: QtWidgets.QTableView = widget.findChild(
+                    QtWidgets.QTableView
+                )  # type: ignore
 
-                widg = self.chooser.GetWidget()
-                from PySide6 import QtWidgets
-                
-                qtw: QtWidgets.QWidget = idaapi.PluginForm.TWidgetToQtPythonWidget(widg) # type: ignore
-                # locate QTableView
-                table_view: QtWidgets.QTableView = qtw.findChild(QtWidgets.QTableView) # type: ignore
-                if table_view:
-                    table_view.selectRow(idx)
+                if table_view is not None:
+                    if len(table_view.selectedIndexes()) == 1:
+                        table_view.selectRow(idx)
                 break
+
 
 def place_to_range(place: idaapi.place_t) -> idaapi.rangeset_t:
     nm = place.name()
     ea = place.toea()
     if ea == idaapi.BADADDR:
         return idaapi.rangeset_t()
-    #logger.debug(f"Rendering line at {ea:08x} of type {nm}")
+    # logger.debug(f"Rendering line at {ea:08x} of type {nm}")
 
     range = idaapi.rangeset_t()
 
@@ -303,14 +300,14 @@ def place_to_range(place: idaapi.place_t) -> idaapi.rangeset_t:
     return range
 
 
-class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
+class YaraSearchUIHooks(idaapi.UI_Hooks):
     def __init__(self, chooser, ranges: idaapi.rangeset_t):
         super().__init__()
         self.chooser = chooser
         self.ranges = ranges
 
     def get_lines_rendering_info(
-        self, out, widget, rin: ida_kernwin.lines_rendering_input_t
+        self, out, widget, rin: idaapi.lines_rendering_input_t
     ):
         """
         Highlight the selected item in other views.
@@ -330,8 +327,8 @@ class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
 
                 ra: idaapi.range_t
                 for ra in range.as_rangevec():
-                    e = ida_kernwin.line_rendering_output_entry_t(line)
-                    e.bg_color = ida_kernwin.CK_EXTRA1
+                    e = idaapi.line_rendering_output_entry_t(line)
+                    e.bg_color = idaapi.CK_EXTRA1
 
                     # logger.debug(
                     #     f"Highlighting from {ra.start_ea:08x} to {ra.end_ea:08x}"
@@ -346,10 +343,15 @@ class YaraSearchUIHooks(ida_kernwin.UI_Hooks):
                     else:
                         out.entries.push_back(e)
 
+    def clear_highlight(self):
+        self.ranges.clear()
+
+    def add_highlight(self, ea, size):
+        self.ranges.add(ea, ea + size)
+
     def update_highlight(self, ea, size):
         self.ranges.clear()
-        self.ranges.add(ea, ea + size)
-        ida_kernwin.refresh_idaview_anyway()
+        self.add_highlight(ea, size)
 
 
 class RecentYaraFilesChooser(idaapi.Choose):
