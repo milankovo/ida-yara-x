@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import idaapi
+import abc
 import yara_x
 from PySide6 import QtWidgets
 
@@ -158,37 +159,58 @@ class result_t:
         )
 
 
-class YaraSearchResultChooser(idaapi.Choose):
+class HighlightingChoose(idaapi.Choose):
+    def __init__(self, flags=0, *args, **kwargs):
+        super().__init__(*args, flags=flags, **kwargs)
+        self.ui_hooks = HighlightingChooseUIHooks(self)
+        self.ui_hooks.hook()
+        self.view_hooks = HighlightingChooseViewHooks(self)
+        self.view_hooks.hook()
+        self.last_selection_len: int = 0
+
+    def clear_highlight(self):
+        self.ui_hooks.clear_highlight()
+
+    def add_highlight(self, ea, size):
+        self.ui_hooks.add_highlight(ea, size)
+
+    def update_highlight(self, ea, size):
+        self.ui_hooks.update_highlight(ea, size)
+
+    def unhook(self):
+        self.ui_hooks.unhook()
+        self.view_hooks.unhook()
+
+    def OnClose(self):
+        self.unhook()
+        return super().OnClose()
+
+    def OnSelectionChange(self, sel: list[int]):
+        self.clear_highlight()
+        for n in sel:
+            self.add_highlight(self.OnGetEA(n), self.OnGetLength(n))
+
+        idaapi.refresh_idaview_anyway()
+        if len(sel) == 1:
+            idaapi.jumpto(
+                self.OnGetEA(sel[0]), -1, idaapi.UIJMP_DONTPUSH | idaapi.UIJMP_ANYVIEW
+            )
+        self.last_selection_len = len(sel)
+
+    @abc.abstractmethod
+    def OnGetLength(self, n: int) -> int:
+        pass
+
+
+class YaraSearchResultChooser(HighlightingChoose):
     def __init__(
         self,
         title,
         items: list[result_t],
         flags=idaapi.CH_MULTI,
-        width=None,
-        height=None,
-        embedded=False,
     ):
-        super().__init__(
-            title=title,
-            cols=result_t.COLUMNS,
-            flags=flags,
-            width=width,
-            height=height,
-            embedded=embedded,
-        )
-        self.items = items
-        ranges = idaapi.rangeset_t()
-        for item in items:
-            ranges.add(item.address, item.address + item.match_length)
-            break
-        self.hooks = YaraSearchUIHooks(self, ranges)
-        self.hooks.hook()
-
-        all_ranges = idaapi.rangeset_t()
-        for item in items:
-            all_ranges.add(item.address, item.address + item.match_length)
-        self.view_hooks = YaraSearchViewHooks(self, all_ranges, items)
-        self.view_hooks.hook()
+        super().__init__(title=title, cols=result_t.COLUMNS, flags=flags)
+        self.items: list[result_t] = items
 
     def OnGetLine(self, n):
         return [*self.items[n]]
@@ -196,37 +218,28 @@ class YaraSearchResultChooser(idaapi.Choose):
     def OnGetEA(self, n):
         return self.items[n].address
 
+    def OnGetLength(self, n: int) -> int:
+        return self.items[n].match_length
+
     def OnGetSize(self):
         return len(self.items)
 
-    def OnClose(self):
-        self.hooks.unhook()
-        self.view_hooks.unhook()
 
-    def OnSelectionChange(self, sel: list[int]):
-        self.hooks.clear_highlight()
-        for s in sel:
-            selected_item: result_t = self.items[s]
-            self.hooks.add_highlight(selected_item.address, selected_item.match_length)
-
-        idaapi.refresh_idaview_anyway()
-        if len(sel) == 1:
-            idaapi.jumpto(
-                selected_item.address, -1, idaapi.UIJMP_DONTPUSH | idaapi.UIJMP_ANYVIEW
-            )
-
-
-class YaraSearchViewHooks(idaapi.View_Hooks):
-    def __init__(
-        self,
-        chooser: YaraSearchResultChooser,
-        ranges: idaapi.rangeset_t,
-        items: list[result_t],
-    ):
+class HighlightingChooseViewHooks(idaapi.View_Hooks):
+    def __init__(self, chooser: HighlightingChoose):
         super().__init__()
         self.chooser = chooser
-        self.ranges = ranges
-        self.items = items
+        self.all_ranges: idaapi.rangeset_t | None = None
+
+    def build_all_ranges(self):
+        if self.all_ranges is not None:
+            return
+        self.all_ranges = idaapi.rangeset_t()
+        for idx in range(0, self.chooser.OnGetSize()):
+            ea = self.chooser.OnGetEA(idx)
+            size = self.chooser.OnGetLength(idx)
+            self.all_ranges.add(ea, ea + size)
+            logger.debug(f"Added range {ea:08x} - {ea + size:08x}")
 
     def view_loc_changed(
         self,
@@ -240,6 +253,11 @@ class YaraSearchViewHooks(idaapi.View_Hooks):
         :param now: (const lochist_entry_t *)
         :param was: (const lochist_entry_t *)"""
 
+        logger.debug(f"View location changed: {view} {now} {was}")
+
+        if self.chooser.last_selection_len > 1:
+            return
+
         place: idaapi.place_t = now.place()
         if not place:
             return
@@ -247,92 +265,58 @@ class YaraSearchViewHooks(idaapi.View_Hooks):
         if ea == idaapi.BADADDR:
             return
 
-        # logger.debug(f"View location changed: {place} {ea:08x}")
-        range = place_to_range(place)
-        if not range:
+        rangeset = place_to_rangeset(place)
+        if not rangeset:
             return
-        range.intersect(self.ranges)
-        if not range:
+
+        if self.all_ranges is None:
+            self.build_all_ranges()
+
+        if self.all_ranges is None:
             return
-        ea = range.next_addr(0)
+
+        rangeset.intersect(self.all_ranges)
+        if not rangeset:
+            return
+        ea = rangeset.next_addr(0)
         if ea == idaapi.BADADDR:
             return
-        for idx, item in enumerate(self.items):
-            if item.address == ea:
-                twidget = self.chooser.GetWidget
-                widget: QtWidgets.QWidget = idaapi.PluginForm.TWidgetToQtPythonWidget(
-                    twidget
-                )  # type: ignore
-                table_view: QtWidgets.QTableView = widget.findChild(
-                    QtWidgets.QTableView
-                )  # type: ignore
 
-                if table_view is not None:
-                    if len(table_view.selectedIndexes()) == 1:
-                        table_view.selectRow(idx)
-                break
+        for idx in range(0, self.chooser.OnGetSize()):
+            item_ea = self.chooser.OnGetEA(idx)
+            if item_ea != ea:
+                continue
 
+            widget: QtWidgets.QWidget = idaapi.PluginForm.TWidgetToQtPythonWidget(
+                self.chooser.GetWidget()
+            )  # type: ignore
 
-def place_to_range(place: idaapi.place_t) -> idaapi.rangeset_t:
-    nm = place.name()
-    ea = place.toea()
-    if ea == idaapi.BADADDR:
-        return idaapi.rangeset_t()
-    # logger.debug(f"Rendering line at {ea:08x} of type {nm}")
+            table_view: QtWidgets.QTableView = widget.findChild(QtWidgets.QTableView)  # type: ignore
 
-    range = idaapi.rangeset_t()
-
-    match nm:
-        case "hexplace_t":
-            range.add(ea, ea + 16)
-        case "idaplace_t":  # handled by _
-            range.add(ea, ea + idaapi.get_item_size(ea))
-        case "hexrays_place_t":
-            # does not work as expected
-            ...
-        case "mbui_place_t":
-            # TODO
-            ...
-        case _:
-            logger.debug(f"Unknown place type {nm} ")
-            range.add(ea, ea + idaapi.get_item_size(ea))
-
-    return range
+            table_view.selectRow(idx)
+            break
 
 
-class YaraSearchUIHooks(idaapi.UI_Hooks):
-    def __init__(self, chooser, ranges: idaapi.rangeset_t):
+class HighlightingChooseUIHooks(idaapi.UI_Hooks):
+    def __init__(self, chooser: HighlightingChoose):
         super().__init__()
-        self.chooser = chooser
-        self.ranges = ranges
+        self.chooser: HighlightingChoose = chooser
+        self.highlight_ranges: idaapi.rangeset_t = idaapi.rangeset_t()
 
     def get_lines_rendering_info(
         self, out, widget, rin: idaapi.lines_rendering_input_t
     ):
-        """
-        Highlight the selected item in other views.
-                           ///< cb: get lines rendering information
-                          ///< \param out (lines_rendering_output_t *)
-                          ///< \param widget (const TWidget *)
-                          ///< \param info (const lines_rendering_input_t *)
-                          ///< \return void
-        """
-
         for section_lines in rin.sections_lines:
             line: idaapi.twinline_t
             for line in section_lines:
-                range = place_to_range(line.at)
+                rangeset: idaapi.rangeset_t = place_to_rangeset(line.at)
 
-                range.intersect(self.ranges)
+                rangeset.intersect(self.highlight_ranges)
 
                 ra: idaapi.range_t
-                for ra in range.as_rangevec():
+                for ra in rangeset.as_rangevec():
                     e = idaapi.line_rendering_output_entry_t(line)
                     e.bg_color = idaapi.CK_EXTRA1
-
-                    # logger.debug(
-                    #     f"Highlighting from {ra.start_ea:08x} to {ra.end_ea:08x}"
-                    # )
 
                     if line.at.name() == "hexplace_t":
                         rel_idx = ra.start_ea - line.at.toea()
@@ -344,14 +328,33 @@ class YaraSearchUIHooks(idaapi.UI_Hooks):
                         out.entries.push_back(e)
 
     def clear_highlight(self):
-        self.ranges.clear()
+        self.highlight_ranges.clear()
 
     def add_highlight(self, ea, size):
-        self.ranges.add(ea, ea + size)
+        self.highlight_ranges.add(ea, ea + size)
 
     def update_highlight(self, ea, size):
-        self.ranges.clear()
+        self.highlight_ranges.clear()
         self.add_highlight(ea, size)
+
+
+def place_to_rangeset(place: idaapi.place_t) -> idaapi.rangeset_t:
+    nm = place.name()
+    ea = place.toea()
+    if ea == idaapi.BADADDR:
+        return idaapi.rangeset_t()
+
+    range = idaapi.rangeset_t()
+
+    match nm:
+        case "hexplace_t":
+            range.add(ea, ea + 16)
+        case "idaplace_t":
+            range.add(ea, ea + idaapi.get_item_size(ea))
+        case _:
+            range.add(ea, ea + idaapi.get_item_size(ea))
+
+    return range
 
 
 class RecentYaraFilesChooser(idaapi.Choose):
@@ -412,12 +415,12 @@ def search(yara_file: str):
     memory = mapped_data()
     logger.debug("Searching for Yara matches...")
 
-    values = yarasearch(memory, rules)
-    if not values:
+    items: list[result_t] = yarasearch(memory, rules)
+    if not items:
         logger.info("No matches found")
         return
     logger.debug("Displaying results...")
-    c = YaraSearchResultChooser("FindYara scan results", values)
+    c = YaraSearchResultChooser(title="FindYara scan results", items=items)
     c.Show()
 
 
