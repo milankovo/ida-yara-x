@@ -6,7 +6,7 @@
         "categories": ["malware-analysis", "collaboration-and-productivity"],
         "description": "A plugin for finding YARA-X rules in IDA Pro",
         "idaVersions": ">=9.0",
-        "logoPath": "logo.png",
+        "logoPath": "logo.jpg",
         "version": "4.1.0"
     }
 }
