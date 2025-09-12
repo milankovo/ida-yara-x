@@ -202,11 +202,15 @@ class RecentYaraFilesChooser(idaapi.Choose):
 
     def OnRefresh(self, sel: int):
         self.items = PreviousFilenames.read()
+        if len(self.items) == 0:
+            return [idaapi.Choose.EMPTY_CHOOSER, idaapi.Choose.NO_SELECTION]
         return [idaapi.Choose.ALL_CHANGED] + self.adjust_last_item(sel)
 
     def OnDeleteLine(self, sel: int):
         PreviousFilenames.remove_filename(self.items[sel])
         self.items = PreviousFilenames.read()
+        if len(self.items) == 0:
+            return [idaapi.Choose.ALL_CHANGED, idaapi.Choose.NO_SELECTION]
         return [idaapi.Choose.ALL_CHANGED] + self.adjust_last_item(sel)
 
 
