@@ -1,5 +1,5 @@
 # FindYara-X
-![logo](logo.jpg)
+![logo](src/logo.jpg)
 
 Use this IDA python plugin to scan your binary with yara rules. All the yara rule matches will be listed with their offset so you can quickly jump to them!  
 
@@ -25,7 +25,7 @@ Before using the plugin you must install the python Yara module in your IDA envi
 
 **Do not install the `yara` module by mistake.** The `yara` python module will mess with your `yara-python` module so it must be uninstalled if it was installed by mistake.
 
-Once you have the yara module installed simply copy the latest release of [`find-yara-x.py`](https://github.com/OALabs/findyara-ida/releases) into your IDA plugins directory and you are ready to start Yara scanning!
+Once you have the yara module installed, simply copy the entire `src` folder into a subdirectory of your IDA plugins directory, and you are ready to start Yara scanning!
 
 ## ❗Compatibility Issues
 FindYara has been developed for use with the __IDA 9+__ and __Python 3__ it is not backwards compatible. 

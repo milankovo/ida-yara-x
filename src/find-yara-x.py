@@ -263,7 +263,7 @@ def process_yara_match(m: yara_x.Match, memory: mapped_data):
 
 def yarasearch(memory: mapped_data, rules: yara_x.Rules):
     values: list[result_t] = list()
-    matches = rules.scan(data=memory.data)
+    matches: yara_x.ScanResults = rules.scan(data=memory.data)
     for rule_match in matches.matching_rules:
         for pattern in rule_match.patterns:
             values.extend(
