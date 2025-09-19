@@ -26,10 +26,11 @@ def place_to_rangeset(place: idaapi.place_t) -> idaapi.rangeset_t:
 
 
 class HighlightingChooseViewHooks(idaapi.View_Hooks):
-    def __init__(self, chooser: "HighlightingChoose"):
+    def __init__(self, chooser: "HighlightingChoose", enabled: bool = True):
         super().__init__()
         self.chooser = chooser
         self.all_ranges: idaapi.rangeset_t | None = None
+        self.enabled: bool = enabled
 
     def build_all_ranges(self):
         if self.all_ranges is not None:
@@ -39,7 +40,7 @@ class HighlightingChooseViewHooks(idaapi.View_Hooks):
             ea = self.chooser.OnGetEA(idx)
             size = self.chooser.OnGetLength(idx)
             self.all_ranges.add(ea, ea + size)
-            logger.debug(f"Added range {ea:08x} - {ea + size:08x}")
+            # logger.debug(f"Added range {ea:08x} - {ea + size:08x}")
 
     def view_loc_changed(
         self,
@@ -52,6 +53,9 @@ class HighlightingChooseViewHooks(idaapi.View_Hooks):
         :param view: (TWidget *)
         :param now: (const lochist_entry_t *)
         :param was: (const lochist_entry_t *)"""
+
+        if not self.enabled:
+            return
 
         logger.debug(f"View location changed: {view} {now} {was}")
 
@@ -102,9 +106,84 @@ class HighlightingChoose(idaapi.Choose):
         super().__init__(*args, flags=flags, **kwargs)
         self.ui_hooks = HighlightingChooseUIHooks(self)
         self.ui_hooks.hook()
-        self.view_hooks = HighlightingChooseViewHooks(self)
+        self.view_hooks = HighlightingChooseViewHooks(self, enabled=False)
         self.view_hooks.hook()
         self.last_selection_len: int = 0
+        self.highlight_all_matches: bool = False
+        self.highlight_all_action_name = f"highlight_all_matches_{id(self)}"
+        self.synchronization_action_name = f"enable_view_hooks_{id(self)}"
+
+        # Register the action
+        self.register_highlight_action()
+        self.register_enable_view_hooks_action()
+
+    def register_highlight_action(self):
+        action_handler = HighlightAllMatchesHandler(self)
+        action_desc = idaapi.action_desc_t(
+            name=self.highlight_all_action_name,
+            label="Highlight All Matches",
+            handler=action_handler,
+            shortcut="Ctrl-Shift-H",  # Shortcut
+            tooltip="Toggle highlighting of all matches",  # Tooltip
+        )
+        ok = idaapi.register_action(desc=action_desc)
+        idaapi.update_action_checkable(self.highlight_all_action_name, True)
+        idaapi.update_action_checked(
+            self.highlight_all_action_name, self.highlight_all_matches
+        )
+        assert ok, f"Failed to register action {self.highlight_all_action_name}"
+
+    def register_enable_view_hooks_action(self):
+        action_handler = EnableViewHooksHandler(self.view_hooks)
+        action_desc = idaapi.action_desc_t(
+            self.synchronization_action_name,  # Name
+            "Sync selection with current location in other views",  # Label
+            action_handler,  # Handler
+            "Ctrl-Shift-V",  # Shortcut
+            "Automatically synchronize selection with the current location in other views",  # Tooltip
+        )
+        ok = idaapi.register_action(action_desc)
+        idaapi.update_action_checkable(self.synchronization_action_name, True)
+        idaapi.update_action_checked(
+            self.synchronization_action_name, self.view_hooks.enabled
+        )
+        assert ok, f"Failed to register action {self.synchronization_action_name}"
+
+    def Show(self, modal=False):
+        if super().Show(modal=modal) >= 0:
+            added = idaapi.attach_action_to_popup(
+                self.GetWidget(), None, self.highlight_all_action_name
+            )
+            assert added, (
+                f"Failed to attach action {self.highlight_all_action_name} to popup"
+            )
+            added = idaapi.attach_action_to_popup(
+                self.GetWidget(), None, self.synchronization_action_name
+            )
+            assert added, (
+                f"Failed to attach action {self.synchronization_action_name} to popup"
+            )
+            return True
+        return False
+
+    def toggle_highlight_all_matches(self):
+        self.highlight_all_matches = not self.highlight_all_matches
+        idaapi.update_action_checked(
+            self.highlight_all_action_name, self.highlight_all_matches
+        )
+
+        if self.highlight_all_matches:
+            if self.view_hooks.all_ranges is None:
+                self.view_hooks.build_all_ranges()
+            if (
+                self.view_hooks.all_ranges is not None
+            ):  # Ensure all_ranges is not None before iterating
+                for ra in self.view_hooks.all_ranges:
+                    self.add_highlight(ra.start_ea, ra.size())
+        else:
+            self.clear_highlight()
+
+        idaapi.refresh_idaview_anyway()
 
     def clear_highlight(self):
         self.ui_hooks.clear_highlight()
@@ -121,9 +200,14 @@ class HighlightingChoose(idaapi.Choose):
 
     def OnClose(self):
         self.unhook()
+        idaapi.unregister_action(self.highlight_all_action_name)
+        idaapi.unregister_action(self.synchronization_action_name)
         return super().OnClose()
 
     def OnSelectionChange(self, sel: list[int] | int):
+        if self.highlight_all_matches:
+            return
+
         self.clear_highlight()
 
         if isinstance(sel, int):
@@ -144,6 +228,35 @@ class HighlightingChoose(idaapi.Choose):
     @abc.abstractmethod
     def OnGetLength(self, n: int) -> int:
         pass
+
+
+class HighlightAllMatchesHandler(idaapi.action_handler_t):
+    def __init__(self, chooser):
+        super().__init__()
+        self.chooser = chooser
+
+    def activate(self, ctx: idaapi.action_ctx_base_t):
+        self.chooser.toggle_highlight_all_matches()
+        return 1
+
+    def update(self, ctx: idaapi.action_ctx_base_t):
+        return idaapi.AST_ENABLE_ALWAYS
+
+
+class EnableViewHooksHandler(idaapi.action_handler_t):
+    def __init__(self, view_hooks):
+        super().__init__()
+        self.view_hooks = view_hooks
+
+    def activate(self, ctx):
+        self.view_hooks.enabled = not self.view_hooks.enabled
+        idaapi.update_action_checked(
+            f"enable_view_hooks_{id(self.view_hooks.chooser)}", self.view_hooks.enabled
+        )
+        return 1
+
+    def update(self, ctx: idaapi.action_ctx_base_t):
+        return idaapi.AST_ENABLE_ALWAYS
 
 
 class HighlightingChooseUIHooks(idaapi.UI_Hooks):
@@ -178,7 +291,9 @@ class HighlightingChooseUIHooks(idaapi.UI_Hooks):
                     match line.at.name():
                         case "hexplace_t":
                             rel_idx: int = ra.start_ea - line.at.toea()
-                            e.cpx = self.hex_prefix_length + 3 * (rel_idx) + (rel_idx > 7)
+                            e.cpx = (
+                                self.hex_prefix_length + 3 * (rel_idx) + (rel_idx > 7)
+                            )
                             e.nchars = ra.size() * 3 - 1
                             e.flags = idaapi.LROEF_CPS_RANGE
                             out.entries.push_back(e)
