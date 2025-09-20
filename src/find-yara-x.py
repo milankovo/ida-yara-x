@@ -35,7 +35,7 @@ import string
 import typing
 from dataclasses import dataclass
 from enum import Enum
-
+from PySide6 import QtCore, QtWidgets, QtGui
 import idaapi
 import yara_x
 from highlighting_chooser import HighlightingChoose
@@ -53,7 +53,7 @@ __author__ = "@herrcore, @_p0ly_, @milankovo"
 
 PLUGIN_NAME = "FindYaraX"
 PLUGIN_HOTKEY = "Ctrl-Alt-Y"
-VERSION = "4.1.0"
+VERSION = "4.2.0"
 
 
 class PreviousFilenames:
@@ -179,6 +179,44 @@ class YaraSearchResultChooser(HighlightingChoose):
 
     def OnGetSize(self):
         return len(self.items)
+
+
+def handle_dropped_file(file_path: str) -> bool:
+    if not os.path.isfile(file_path):
+        logger.debug(f"Dropped file is not a file: {file_path}")
+        return False
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext in [".yara", ".yar", ".rules"]:
+        PreviousFilenames.add_filename(file_path)
+        search(file_path)
+        return True
+
+    return False
+
+
+class FileDropFilter(QtCore.QObject):
+    def on_drop(self, obj, event) -> bool:
+        logger.debug(f"Drop on {obj} {event.mimeData().urls()}")
+
+        if not event.mimeData().hasUrls():
+            return False
+        handled = False
+        for url in event.mimeData().urls():
+            logger.debug(f"Dropped file: {url.toLocalFile()}")
+            handled |= handle_dropped_file(url.toLocalFile())
+        return handled
+
+    def eventFilter(self, obj, event):
+        match event.type():
+            case QtCore.QEvent.Type.Drop:
+                if self.on_drop(obj, event):
+                    event.acceptProposedAction()
+                    return True
+            case _:
+                pass
+
+        return super().eventFilter(obj, event)
 
 
 class RecentYaraFilesChooser(idaapi.Choose):
@@ -310,6 +348,18 @@ class open_recent_files_ah_t(idaapi.action_handler_t):
         return idaapi.AST_ENABLE_ALWAYS
 
 
+def get_main_window():
+    windows = QtWidgets.QApplication.allWindows()
+    for w in windows:
+        if (
+            isinstance(w, QtGui.QWindow)
+            and w.objectName() == "IDAMainWindowClassWindow"
+        ):
+            return w
+
+    return None
+
+
 # --------------------------------------------------------------------------
 # Plugin
 # --------------------------------------------------------------------------
@@ -330,6 +380,12 @@ class FindYaraX_Plugin_t(idaapi.plugin_t):
         addon.version = VERSION
         idaapi.register_addon(addon)
 
+        self.register_actions()
+        self.install_drop_filter()
+
+        return idaapi.PLUGIN_KEEP
+
+    def register_actions(self):
         search_bytes_action = idaapi.action_desc_t(
             self.search_action_name,
             "Yara-x rules",
@@ -349,12 +405,32 @@ class FindYaraX_Plugin_t(idaapi.plugin_t):
             "View/Recent scripts", self.recent_action_name, idaapi.SETMENU_APP
         )
 
-        return idaapi.PLUGIN_KEEP
+    def install_drop_filter(self):
+        main_window = get_main_window()
+        if main_window:
+            self.filter = FileDropFilter()
+            main_window.installEventFilter(self.filter)
+        else:
+            self.filter = None
 
     def term(self):
+        self.remove_drop_filter()
+        self.unregister_actions()
+        pass
+
+    def unregister_actions(self):
         idaapi.unregister_action(self.search_action_name)
         idaapi.unregister_action(self.recent_action_name)
-        pass
+
+    def remove_drop_filter(self):
+        if self.filter is None:
+            return
+
+        main_window = get_main_window()
+        if main_window:
+            main_window.removeEventFilter(self.filter)
+            del self.filter
+            self.filter = None
 
     def run(self, arg): ...
 

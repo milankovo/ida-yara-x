@@ -7,6 +7,6 @@
         "description": "A plugin for finding YARA-X rules in IDA Pro",
         "idaVersions": ">=9.0",
         "logoPath": "logo.jpg",
-        "version": "4.1.0"
+        "version": "4.2.0"
     }
 }

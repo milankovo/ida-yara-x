@@ -96,7 +96,6 @@ class HighlightingChooseViewHooks(idaapi.View_Hooks):
             )  # type: ignore
 
             table_view: QtWidgets.QTableView = widget.findChild(QtWidgets.QTableView)  # type: ignore
-
             table_view.selectRow(idx)
             break
 
@@ -134,7 +133,7 @@ class HighlightingChoose(idaapi.Choose):
         assert ok, f"Failed to register action {self.highlight_all_action_name}"
 
     def register_enable_view_hooks_action(self):
-        action_handler = EnableViewHooksHandler(self.view_hooks)
+        action_handler = EnableViewHooksHandler(self)
         action_desc = idaapi.action_desc_t(
             self.synchronization_action_name,  # Name
             "Sync selection with current location in other views",  # Label
@@ -240,23 +239,27 @@ class HighlightAllMatchesHandler(idaapi.action_handler_t):
         return 1
 
     def update(self, ctx: idaapi.action_ctx_base_t):
-        return idaapi.AST_ENABLE_ALWAYS
+        if ctx.widget != self.chooser.GetWidget():
+            return idaapi.AST_DISABLE_FOR_WIDGET
+        return idaapi.AST_ENABLE_FOR_WIDGET
 
 
 class EnableViewHooksHandler(idaapi.action_handler_t):
-    def __init__(self, view_hooks):
+    def __init__(self, chooser: HighlightingChoose):
         super().__init__()
-        self.view_hooks = view_hooks
+        self.chooser = chooser
 
     def activate(self, ctx):
-        self.view_hooks.enabled = not self.view_hooks.enabled
+        self.chooser.view_hooks.enabled = not self.chooser.view_hooks.enabled
         idaapi.update_action_checked(
-            f"enable_view_hooks_{id(self.view_hooks.chooser)}", self.view_hooks.enabled
+            f"enable_view_hooks_{id(self.chooser)}", self.chooser.view_hooks.enabled
         )
         return 1
 
     def update(self, ctx: idaapi.action_ctx_base_t):
-        return idaapi.AST_ENABLE_ALWAYS
+        if ctx.widget != self.chooser.GetWidget():
+            return idaapi.AST_DISABLE_FOR_WIDGET
+        return idaapi.AST_ENABLE_FOR_WIDGET
 
 
 class HighlightingChooseUIHooks(idaapi.UI_Hooks):
