@@ -1571,3 +1571,25 @@ rule salsa20 {
 	condition:
 		$c0
 }
+
+
+rule alg_crypto_aes {
+    meta:
+        descrption = "Identify code/constants for the AES cryptographic algorithm."
+        author = "@shellcromancer <root@shellcromancer.io>"
+        version = "0.1"
+        date = "2022-01-03"
+        reference = "https://www.goggleheadedhacker.com/blog/post/reversing-crypto-functions-aes"
+    strings:
+        // T-Table value
+        $c1 = { a5 63 63 c6 }
+        // S-Box values (only a subset)
+        // https://github.com/secana/AES-TBOX/blob/master/C/AES-KeyExp.cpp#L5-L6
+        $c2 = { 63 7c 77 7b f2 6b 6f c5 30 01 67 2b fe d7 ab 76 
+                ca 82 c9 7d fa 59 47 f0 ad d4 a2 af 9c a4 72 c0}
+        // Rcon values (only a subset)
+        // https://github.com/secana/AES-TBOX/blob/master/C/AES-KeyExp.cpp#L23
+        $c3 = { 8d 01 02 04 08 10 20 40 80 1b 36 }
+    condition:
+        any of them
+}

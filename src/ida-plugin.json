@@ -1,12 +1,40 @@
 {
     "IDAMetadataDescriptorVersion": 1,
     "plugin": {
-        "name": "FindYara-X",
+        "name": "find-yara-x",
+        "version": "4.2.1",
         "entryPoint": "find-yara-x.py",
-        "categories": ["malware-analysis", "collaboration-and-productivity"],
-        "description": "A plugin for finding YARA-X rules in IDA Pro",
+        "description": "Find YARA-X rule matches in IDA Pro",
+        "license": "MIT",
         "idaVersions": ">=9.0",
-        "logoPath": "logo.jpg",
-        "version": "4.2.0"
+        "platforms": [
+            "windows-x86_64",
+            "linux-x86_64",
+            "macos-x86_64",
+            "macos-aarch64"
+        ],
+        "categories": [
+            "malware-analysis",
+            "collaboration-and-productivity"
+        ],
+        "keywords": [
+            "yara",
+            "yara-x",
+            "scan",
+            "rules"
+        ],
+        "pythonDependencies": [
+            "yara-x"
+        ],
+        "urls": {
+            "repository": "https://github.com/milankovo/ida-yara-x"
+        },
+        "authors": [
+            {
+                "name": "Milankovo",
+                "email": "ida-yara-x@noreply.github.com"
+            }
+        ],
+        "logoPath": "logo.jpg"
     }
 }

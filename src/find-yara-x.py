@@ -53,7 +53,7 @@ __author__ = "@herrcore, @_p0ly_, @milankovo"
 
 PLUGIN_NAME = "FindYaraX"
 PLUGIN_HOTKEY = "Ctrl-Alt-Y"
-VERSION = "4.2.0"
+VERSION = "4.2.1"
 
 
 class PreviousFilenames:
@@ -373,9 +373,9 @@ class FindYaraX_Plugin_t(idaapi.plugin_t):
 
     def init(self):
         addon = idaapi.addon_info_t()
-        addon.id = "milankovo.findyarax"
-        addon.name = "FindYara"
-        addon.producer = "@milankovo, @herrcore, @_p0ly_"
+        addon.id = "milankovo.find-yara-x"
+        addon.name = "FindYaraX"
+        addon.producer = "Milankovo"
         addon.url = "https://github.com/milankovo/ida-yara-x"
         addon.version = VERSION
         idaapi.register_addon(addon)
